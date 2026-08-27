@@ -37,4 +37,4 @@ with mss.MSS() as sct:
 # And the output will be something like this:
 [{'left': 0, 'top': 0, 'width': 3840, 'height': 1080}, {'left': 0, 'top': 0, 'width': 1920, 'height': 1080, 'is_primary': True, 'output': 'HDMI-2', 'name': '24B1W', 'unique_id': 'model=AOC2401&serial=1G9Q3HA000728&mfr_date=2024W12'}, {'left': 1920, 'top': 0, 'width': 1920, 'height': 1080, 'is_primary': False, 'output': 'eDP-1', 'unique_id': 'model=BOE0812&mfr_date=2018W31'}]
 ```
-So the 0 index is the Open-CV `ìmshow` and the subsequents dictionaries are the actual monitors, with `left` and `top` as it's origin point, `width` and `height` as it's size, `is_primary` for "primaryness" and the other properties are for the monitor description.
+So the 0 index is "all monitors", side by side and the subsequents dictionaries are the actual monitors, with `left` and `top` as it's origin point, `width` and `height` as it's size, `is_primary` for "primaryness" and the other properties are for the monitor description.
