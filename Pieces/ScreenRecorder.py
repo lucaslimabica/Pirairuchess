@@ -15,6 +15,7 @@ with mss.MSS() as sct:
         img = np.array(sct.grab(monitor))
 
         # Display the picture
+        cv2.namedWindow('Pirairuchess', cv2.WINDOW_NORMAL)
         cv2.imshow("Pirairuchess", img)
 
         # Press "q" to quit
