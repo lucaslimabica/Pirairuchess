@@ -1,0 +1,22 @@
+# Python virtual environments
+venv/
+.venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+
+# Screen recordings / captures
+*.mp4
+*.avi
+*.mkv
+*.mov
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
