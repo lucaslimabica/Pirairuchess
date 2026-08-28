@@ -1,12 +1,19 @@
+import os
 import queue
 import threading
+import time
 
 import cv2
 import numpy as np
 import mss
 
 
-def _resolve_monitor(sct, selected_monitor, screen_coverage, screen_coverage_size):
+def _resolve_monitor(
+        sct,
+        selected_monitor,
+        screen_coverage,
+        screen_coverage_size
+    ):
     """
     Translate the user's monitor choice into the concrete bounding box that
     ``mss`` needs for a grab.
@@ -65,8 +72,13 @@ def _resolve_monitor(sct, selected_monitor, screen_coverage, screen_coverage_siz
     }
 
 
-def capture_frame(frame_queue, stop_event, selected_monitor=1,
-                  screen_coverage=False, screen_coverage_size=0.7):
+def capture_frame(
+        frame_queue,
+        stop_event,
+        selected_monitor=1,
+        screen_coverage=False,
+        screen_coverage_size=0.7
+    ):
     """
     Producer thread: grab the selected screen region in a tight loop and hand
     each frame to the consumer through ``frame_queue``.
@@ -119,9 +131,8 @@ def capture_frame(frame_queue, stop_event, selected_monitor=1,
         "screen_coverage_size must be a number"
     assert 0 < screen_coverage_size <= 1, "screen_coverage_size must be in the range (0, 1]"
 
-    # mss instances are NOT thread-safe: create one inside this thread.
     with mss.mss() as sct:
-        monitor = _resolve_monitor(sct, selected_monitor, screen_coverage, screen_coverage_size)
+        monitor = _resolve_monitor(sct, selected_monitor, screen_coverage, screen_coverage_size) # get the selected monitor
 
         while not stop_event.is_set():
             img = np.array(sct.grab(monitor))
@@ -141,7 +152,11 @@ def capture_frame(frame_queue, stop_event, selected_monitor=1,
                     pass
 
 
-def display_frames(frame_queue, stop_event, screen_name="Pirairuchess"):
+def display_frames(
+        frame_queue,
+        stop_event,
+        screen_name="Pirairuchess"
+    ):
     """
     Consumer loop: pull frames from ``frame_queue`` and render them in a
     resizable OpenCV window until the user quits.
@@ -202,8 +217,12 @@ def display_frames(frame_queue, stop_event, screen_name="Pirairuchess"):
         cv2.destroyAllWindows()
 
 
-def screen_capture(selected_monitor=1, screen_name="Pirairuchess",
-                   screen_coverage=False, screen_coverage_size=0.7):
+def screen_capture(
+        selected_monitor=1,
+        screen_name="Pirairuchess",
+        screen_coverage=False,
+        screen_coverage_size=0.7
+    ):
     """
     Entry point: wire up the producer/consumer pair and run a live screen
     capture session until the user quits.
@@ -260,3 +279,192 @@ def screen_capture(selected_monitor=1, screen_name="Pirairuchess",
     finally:
         stop_event.set()
         capture_thread.join(timeout=2)
+
+
+# ---------------------------------------------------------------------------
+# On-demand video recording
+# ---------------------------------------------------------------------------
+
+RECORD_FPS = 20.0
+
+
+def _video_writer_loop(record_queue, output_path, fps):
+    """
+    Writer thread: drain ``record_queue`` to a video file until told to stop.
+
+    Runs alongside the live preview while a recording is active. The
+    ``cv2.VideoWriter`` is created lazily from the first frame so its size
+    always matches the real capture resolution (a mismatch makes OpenCV write
+    an empty file). Frames arrive as BGRA (``mss``'s layout) and are converted
+    to the BGR that ``VideoWriter`` expects.
+
+    The loop ends when it receives the ``None`` sentinel that
+    :func:`record_screen` enqueues on "stop recording" / shutdown.
+
+    Args:
+        record_queue (queue.Queue): Unbounded queue of BGRA ``numpy.ndarray``
+            frames, terminated by a single ``None`` sentinel. Unbounded so that
+            a momentarily slow disk never forces a recorded frame to be
+            dropped.
+        output_path (str): Destination file. The container/codec pair is
+            ``.mp4`` + ``mp4v``; change both together if you need another.
+        fps (float): Frame rate stamped into the file. Must match the rate at
+            which :func:`record_screen` actually feeds the queue, otherwise
+            playback runs fast or slow.
+
+    Returns:
+        None
+    """
+    writer = None
+    try:
+        while True:
+            frame = record_queue.get()
+            if frame is None:            # sentinel -> stop recording
+                break
+
+            bgr = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+            if writer is None:
+                height, width = bgr.shape[:2]
+                writer = cv2.VideoWriter(
+                    output_path,
+                    cv2.VideoWriter_fourcc(*"mp4v"),
+                    fps,
+                    (width, height),
+                )
+            writer.write(bgr)
+    finally:
+        if writer is not None:
+            writer.release()
+
+
+def record_screen(
+        selected_monitor=1,
+        screen_name="Pirairuchess",
+        screen_coverage=False,
+        screen_coverage_size=0.7,
+        output_dir="recordings",
+        fps=RECORD_FPS,
+    ):
+    """
+    Live preview of the captured monitor with **on-demand** video recording.
+
+    Same producer/consumer skeleton as :func:`screen_capture` -- a daemon
+    capture thread fills a small drop-oldest ``frame_queue``, this function
+    displays it on the main thread -- plus a third stage that only exists while
+    a recording is running:
+
+    * press ``r`` (with the preview window focused) to start recording; a new
+      timestamped ``.mp4`` is opened under ``output_dir`` and a
+      :func:`_video_writer_loop` thread starts draining an unbounded
+      ``record_queue``;
+    * press ``r`` again to stop: a ``None`` sentinel is queued, the writer
+      thread finishes the file and is joined;
+    * press ``q`` (or ``Ctrl+C``) to quit, which also stops any active
+      recording cleanly.
+
+    Recording captures exactly what the preview shows (the frames coming off
+    ``frame_queue``). Frames are handed to the writer at a fixed ``fps`` cadence
+    -- regardless of how fast the capture loop actually spins -- so the saved
+    video plays back at real-time speed. If the loop stalls, the cadence
+    resynchronises to "now" instead of trying to catch up with a burst.
+
+    Args:
+        selected_monitor (int): Monitor index, forwarded to
+            :func:`capture_frame` / :func:`_resolve_monitor`. ``1`` is the first
+            physical monitor; ``0`` and out-of-range values fall back to the
+            primary monitor. Defaults to ``1``.
+        screen_name (str): Non-empty preview-window title. Defaults to
+            ``"Pirairuchess"``.
+        screen_coverage (bool): When ``True`` capture only the top-left
+            ``screen_coverage_size`` fraction of the monitor. Defaults to
+            ``False``.
+        screen_coverage_size (float): Crop factor in ``(0, 1]`` used when
+            ``screen_coverage`` is ``True``. Defaults to ``0.7``.
+        output_dir (str): Directory for the ``.mp4`` files, created if missing.
+            Defaults to ``"recordings"``.
+        fps (float): Frame rate for the output files and the rate at which
+            frames are fed to the writer. Must be > 0. Defaults to
+            :data:`RECORD_FPS`.
+
+    Raises:
+        AssertionError: If ``fps`` is not a positive number, ``output_dir`` is
+            not a non-empty string, or an argument fails a check inside
+            :func:`capture_frame` / :func:`display_frames`.
+
+    Returns:
+        None: Returns once the preview loop and every worker thread have
+        stopped.
+    """
+    assert isinstance(output_dir, str) and output_dir, "output_dir must be a non-empty str"
+    assert isinstance(fps, (int, float)) and not isinstance(fps, bool), "fps must be a number"
+    assert fps > 0, "fps must be > 0"
+
+    frame_queue = queue.Queue(maxsize=2)
+    stop_event = threading.Event()
+
+    capture_thread = threading.Thread(
+        target=capture_frame,
+        args=(frame_queue, stop_event, selected_monitor,
+              screen_coverage, screen_coverage_size),
+        daemon=True,
+    )
+    capture_thread.start()
+
+    cv2.namedWindow(screen_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(screen_name, 1000, 700)
+
+    frame_interval = 1.0 / fps
+    recorder = {"queue": None, "thread": None, "next_ts": 0.0}
+
+    def start_recording():
+        if recorder["thread"] is not None:
+            return
+        os.makedirs(output_dir, exist_ok=True)
+        path = os.path.join(output_dir, time.strftime("capture_%Y%m%d_%H%M%S.mp4"))
+        record_queue = queue.Queue()                     # unbounded: never drop
+        thread = threading.Thread(
+            target=_video_writer_loop,
+            args=(record_queue, path, fps),
+            daemon=True,
+        )
+        thread.start()
+        recorder.update(queue=record_queue, thread=thread, next_ts=time.time())
+        print(f"Recording -> {path}")
+
+    def stop_recording():
+        if recorder["thread"] is None:
+            return
+        recorder["queue"].put(None)                      # sentinel
+        recorder["thread"].join(timeout=5)
+        recorder.update(queue=None, thread=None)
+        print("Recording stopped")
+
+    try:
+        while not stop_event.is_set():
+            try:
+                frame = frame_queue.get(timeout=1)
+            except queue.Empty:
+                continue
+
+            cv2.imshow(screen_name, frame)
+
+            if recorder["thread"] is not None:
+                now = time.time()
+                if now >= recorder["next_ts"]:
+                    recorder["queue"].put(frame)
+                    recorder["next_ts"] += frame_interval
+                    if now - recorder["next_ts"] > frame_interval:
+                        recorder["next_ts"] = now + frame_interval   # resync after a stall
+
+            key = cv2.waitKey(25) & 0xFF
+            if key == ord("q"):
+                break
+            if key == ord("r"):
+                stop_recording() if recorder["thread"] is not None else start_recording()
+    except KeyboardInterrupt:
+        print("Stopping the capture...")
+    finally:
+        stop_event.set()
+        stop_recording()
+        capture_thread.join(timeout=2)
+        cv2.destroyAllWindows()
