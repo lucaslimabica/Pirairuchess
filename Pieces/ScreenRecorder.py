@@ -198,7 +198,7 @@ def record_screen(recording_queue, stop_event, fps=TARGET_FPS, path="videotest.m
                     (width, height),
                 )
 
-            writer.write(bgr)
+            writer.write(bgr) # Writing the frame
             frames_written += 1
 
     finally:
