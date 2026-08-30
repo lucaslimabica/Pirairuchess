@@ -17,6 +17,7 @@ def _resolve_monitor(
         screen_coverage,
         screen_coverage_size
     ):
+    """Pick the mss monitor dict to grab, optionally cropped to a centered fraction."""
     monitors = sct.monitors
 
     if selected_monitor != 0 and selected_monitor < len(monitors):
@@ -40,6 +41,7 @@ def _resolve_monitor(
 
 
 def _put_drop_oldest(q, item):
+    """Put `item` on the queue; if it's full, discard the oldest entry and retry"""
     try:
         q.put_nowait(item)
     except queue.Full:
@@ -53,6 +55,7 @@ def _put_drop_oldest(q, item):
             pass
 
 def _drain(q):
+    """Remove and discard every item currently in the queue"""
     while True:
         try:
             q.get_nowait()
@@ -68,6 +71,8 @@ def capture_frame(
         screen_coverage=False,
         screen_coverage_size=0.7
     ):
+    """Grab screen frames at TARGET_FPS, feeding the display queue always and the
+    recording queue while `recording_event` is set. Runs until `stop_event` is set"""
     assert isinstance(selected_monitor, int) and not isinstance(selected_monitor, bool), \
         "selected_monitor must be an int"
     assert selected_monitor >= 0, "selected_monitor must be >= 0"
@@ -79,7 +84,7 @@ def capture_frame(
     with mss.mss() as sct:
         monitor = _resolve_monitor(sct, selected_monitor, screen_coverage, screen_coverage_size)
 
-        next_frame = time.perf_counter()
+        next_frame = time.perf_counter() # Starts the timer for each frame capture
 
         while not stop_event.is_set():
             img = np.array(sct.grab(monitor))
@@ -90,13 +95,13 @@ def capture_frame(
                 _put_drop_oldest(recording_queue, img)
 
             # Sleep until the next tick. If we're already behind
-            # (grab was slow), reset the clock instead of busy-looping.
+            # (grab was slow), reset the clock instead of keeping incrementing it
             next_frame += FRAME_INTERVAL
             sleep_for = next_frame - time.perf_counter()
             if sleep_for > 0:
                 time.sleep(sleep_for)
             else:
-                next_frame = time.perf_counter()
+                next_frame = time.perf_counter() # Reset the clock if we're behind schedule
 
 
 def display_frames(
@@ -106,6 +111,8 @@ def display_frames(
         recording_event,
         screen_name="Pirairuchess"
     ):
+    """Show frames from the display queue in an OpenCV window and handle keys:
+    `q` quits, `r` toggles recording"""
     assert isinstance(screen_name, str) and screen_name, "screen_name must be a non-empty str"
 
     cv2.namedWindow(screen_name, cv2.WINDOW_NORMAL)
@@ -141,7 +148,7 @@ def display_frames(
                     print("Recording stopped")
                 else:
                     # ---- Start recording ----
-                    _drain(recording_queue)
+                    _drain(recording_queue) # Get a clear queue
 
                     path = datetime.now().strftime("recording_%Y%m%d_%H%M%S.mp4")
                     recording_thread = threading.Thread(
@@ -163,6 +170,8 @@ def display_frames(
         cv2.destroyAllWindows()
 
 def record_screen(recording_queue, stop_event, fps=TARGET_FPS, path="videotest.mp4"):
+    """Consume frames from the recording queue and write them to `path`.
+    Stops on the `None` sentinel or when `stop_event` is set, then releases the file."""
     writer = None
     frames_written = 0
 
@@ -171,7 +180,7 @@ def record_screen(recording_queue, stop_event, fps=TARGET_FPS, path="videotest.m
             try:
                 frame = recording_queue.get(timeout=0.5)
             except queue.Empty:
-                if stop_event.is_set():
+                if stop_event.is_set(): # Stop if the main thread gets the flag
                     break
                 continue
 
@@ -204,6 +213,8 @@ def screen_capture(
         screen_coverage=False,
         screen_coverage_size=0.7
     ):
+    """Wire up the queues/events, start the capture thread, and run the display
+    loop on the main thread until the user quits"""
     # Display queue: tiny, drop-oldest.
     frame_queue = queue.Queue(maxsize=2)
     stop_event = threading.Event()
