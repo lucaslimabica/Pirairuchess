@@ -1,5 +1,7 @@
+path: /home/trigao/Programacao/Projetos/Pirairuchess/datasets/board/model_training
 train: images/train
 val: images/val
+test: images/test
 
 nc: 13
 names:
